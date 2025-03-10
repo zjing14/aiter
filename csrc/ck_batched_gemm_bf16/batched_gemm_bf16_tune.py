@@ -73,10 +73,9 @@ def tune_batched_gemm(b, m, n, k, useSplitK = False):
         for splitK in range(maxsplitK+1):
             try:
                 (out), avg_t = kernel_instance_test(x, weight, out, i, splitK)
-                tflops = float(b * m * n * k * 2) // (avg_t * 1000000)
                 isClosed = checkClose(ref_out, out, rtol=1e-2, atol=0.01)
                 if isClosed:
-                    print(f"{str(dim):<20} kernelid:{i:<3d}\t avg: {avg_t:<8.2f} us, tflops: {tflops:<8.2f},  {kernel.name}, {splitK=}")
+                    print(f"{str(dim):<20} kernelid:{i:<3d}\t avg: {avg_t:<8.2f} us, {kernel.name}, {splitK=}")
                     if best_time < 0 or avg_t < best_time:
                         best_kernelConfig = (i, splitK)
                         best_time = avg_t
