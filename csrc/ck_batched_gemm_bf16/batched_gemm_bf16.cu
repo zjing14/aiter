@@ -8,7 +8,6 @@
 
 using BatchedKernel = std::function<
     torch::Tensor(torch::Tensor &, torch::Tensor &,
-                  torch::Tensor &, torch::Tensor &, 
                   torch::Tensor &, std::optional<torch::Tensor>,
                   int)>;
 
@@ -38,27 +37,27 @@ BatchedKernel batched_heuristic_dispatch(int B, int M, int N, int K)
   if (M < 64 && N < 2048 && K < 2048)
   {
     // Kernel that generally works well on small shapes.
-    return bf16_batched_64x16x16x128_16x16_1x1_8x8x1_8x8x1_1x16x1x4_4x4x1_1x1_interwave_v2;
+    return bf16_batched_64x16x16x64_16x16_1x1_8x8x1_8x8x1_1x16x1x4_4x4x1_1x1_interwave_v2;
   }
   else if (M < 64 && K < 2048)
   {
     // Kernel that works well for small batch size and small K.
-    return bf16_batched_128x16x32x128_16x16_1x1_8x16x1_8x16x1_1x16x1x8_4x4x1_1x1_intrawave_v2;
+    return bf16_batched_128x16x32x64_16x16_1x1_8x16x1_8x16x1_1x16x1x8_4x4x1_1x1_intrawave_v2;
   }
   else if (M < 64 && N < 2048)
   {
     // Kernel that works well for small batch size and small N.
-    return bf16_batched_128x32x16x128_16x16_1x1_8x16x1_8x16x1_1x16x1x8_2x2x1_1x1_interwave_v2;
+    return bf16_batched_128x32x16x64_16x16_1x1_8x16x1_8x16x1_1x16x1x8_2x2x1_1x1_interwave_v2;
   }
   else if (M < 64 && N > 2048 && K > 2048)
   {
     // Kernel that works well for small M but larger N and K.
-    return bf16_batched_64x16x16x256_16x16_1x1_16x4x1_16x4x1_1x16x1x4_4x4x1_1x1_intrawave_v1;
+    return bf16_batched_64x16x16x128_16x16_1x1_16x4x1_16x4x1_1x16x1x4_4x4x1_1x1_intrawave_v1;
   }
   else if (M < 64)
   {
     // Fallback to generic small batch kernel if we cant find a good match.
-    return bf16_batched_64x16x16x128_16x16_1x1_8x8x1_8x8x1_1x16x1x4_4x4x1_1x1_interwave_v2;
+    return bf16_batched_64x16x16x64_16x16_1x1_8x8x1_8x8x1_1x16x1x4_4x4x1_1x1_interwave_v2;
     /* } else if (((M < 512 && K < 8192) || (N <= 2048 && K <= 8192) || (K <= 2048 && N <= 8192)) && K >= 1024) {
       // Kernel that is optimized for larger batch sizes but otherwise small
       // tensors.
@@ -67,23 +66,23 @@ BatchedKernel batched_heuristic_dispatch(int B, int M, int N, int K)
   else if (K < 1024)
   {
     // Special case for small K.
-    return bf16_batched_256x128x128x128_32x32_2x2_8x32x1_8x32x1_1x32x1x8_8x8x1_1x1_interwave_v1;
+    return bf16_batched_256x128x128x64_32x32_2x2_8x32x1_8x32x1_1x32x1x8_8x8x1_1x1_interwave_v1;
   }
   else if (M < 1024)
   {
     // Kernel for generic medium batch sizes.
-    return bf16_batched_256x128x128x128_32x32_2x2_8x32x1_8x32x1_1x32x1x8_8x8x1_1x1_intrawave_v3;
+    return bf16_batched_256x128x128x64_32x32_2x2_8x32x1_8x32x1_1x32x1x8_8x8x1_1x1_intrawave_v3;
   }
   else if (M >= 1024 && N >= 1024 && K >= 1024)
   {
     // Kernel for very large gemm
     // return bf16_batched_256x256x256x128_16x16_8x8_8x32x1_8x32x1_1x32x1x8_8x8x1_1x2_intrawave_v3;
-    return bf16_batched_256x256x128x64_32x32_4x2_4x64x1_4x64x1_1x32x1x8_8x8x1_1x1_interwave_v1;
+    return bf16_batched_256x256x128x32_32x32_4x2_4x64x1_4x64x1_1x32x1x8_8x8x1_1x1_interwave_v1;
   }
   else
   {
     // Fallback large kernel.
-    return bf16_batched_256x224x256x128_16x16_7x8_8x32x1_8x32x1_1x32x1x8_8x8x1_1x2_intrawave_v3;
+    return bf16_batched_256x224x256x32_16x16_7x8_8x32x1_8x32x1_1x32x1x8_8x8x1_1x2_intrawave_v3;
   }
 }
 
