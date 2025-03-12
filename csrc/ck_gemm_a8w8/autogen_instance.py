@@ -13,8 +13,8 @@ class get_all_instances:
         self.k_tile = [32, 64, 128, 256, 512]
         self.block_size = [64, 128, 256]
         self.mn_warp = [1, 2, 4]
-        self.nbyte_a = 2
-        self.nbyte_b = 2
+        self.nbyte_a = 1
+        self.nbyte_b = 1
         self.nbyte_c = 2
         self.kpack = 128 // (self.nbyte_a * 8)
 
@@ -90,11 +90,19 @@ class get_all_instances:
 
         tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
 
-        if((tid_n < 4) and (n_repeat % 2 == 0)):
-            c_n_repeat = 2
+        #if((tid_n < 4) and (n_repeat % 2 == 0)):
+            #c_n_repeat = 2
+            #tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
+
+        if(c_m_repeat * mfma < tid_m and m_repeat % 2 == 0):
+            c_m_repeat = 2
             tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
 
-        return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], n_vec]
+        if(c_m_repeat * mfma < tid_m):
+            n_vec = 4
+            tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
+
+        return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
 
     def get_ab_transfer(self, blk, mn, k):
         k0 = k // self.kpack
@@ -117,7 +125,9 @@ class get_all_instances:
                                     a_load = self.get_ab_transfer(blk, m, k)
                                     b_load = self.get_ab_transfer(blk, n, k)
                                     c_shuffle = self.get_c_transfer(blk, m, n, m_warp, n_warp, mfma_cfg)
-                                    print(f"block_size = {blk} m_tile = {m} n_tile = {n} k_tile = {k} m_warp = {m_warp} n_warp = {n_warp} mfma = {mfma_cfg}  a_load = {a_load} b_load = {b_load} c_shuffle = {c_shuffle}")
+                                    #0: kernelInstance(       256,       256,       224,       128,          32,          32,          2,          7,      [8, 32, 1],      [8, 32, 1],   [1, 64, 1, 4],  [8, 8, 1],           1,           1,  "Intrawave",    3),
+                                    #1066: kernelInstance(   256,        256,       224,       128,          32,          32,          2,          7,      [8, 32, 1],       [8, 32, 1],     [1, 64, 1, 4],  2,      1,      [8, 8, 1], "Intrawave", 3 ),
+                                    print(f"{num_i}: kernelInstance(\t{blk},\t{m},\t{n},\t{k},\t{mfma_cfg[0]},\t{mfma_cfg[1]},\t{mfma_cfg[2]},\t{mfma_cfg[3]},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\"Intrawave\", 3),")
                                     num_i += 1
         print(f"total instance = {num_i}")
 
