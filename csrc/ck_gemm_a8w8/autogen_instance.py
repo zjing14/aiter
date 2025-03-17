@@ -74,14 +74,14 @@ class get_all_instances:
         return True
 
     def is_good(self, blk, m, n, k, m_warp, n_warp, pipeline, scheduler):
-        #if(not (m == 256 and n == 256)):
+        #if(not (blk == 256 and m == 32 and n == 64)):
             #return False
 
         m_per_warp = m // m_warp
         n_per_warp = n // n_warp
 
         #limit warp workloads
-        if(m_per_warp > 128 or n_per_warp > 128):
+        if((m_per_warp > 128 or n_per_warp > 128) and blk < 256):
             return False
 
         if((m < 128 or n < 128) and pipeline > 3):
@@ -171,16 +171,11 @@ class get_all_instances:
         ctgs_store_size = c_shuffle_n * self.nbyte_c
 
         #if possible, enlarge c_n_repeat to fit 128B cacheline
-        if(ctgs_store_size < 128 and c_n_repeat % 2 == 0):
+        if(ctgs_store_size < 128 and n_repeat % 2 == 0):
             c_n_repeat = 2
             tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
             if(tid_n * tid_m == blk):
                 return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
-
-        ##if not meet, use default
-        #tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
-        #if(tid_n * tid_m == blk):
-            #return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
 
         #if not meet, try enlarge c_m_repeat
         if(m_repeat % 2 == 0):
@@ -194,13 +189,6 @@ class get_all_instances:
         tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
         if(tid_n * tid_m == blk):
             return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
-
-        #if not meet, try reduce vec_len
-        n_vec = n_vec // 2
-        tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
-        if(tid_n * tid_m == blk):
-            return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
-
 
         #still not meat, raise an Exception
         if(tid_n * tid_m != blk):
