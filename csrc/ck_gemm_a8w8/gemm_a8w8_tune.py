@@ -78,9 +78,9 @@ def tune_gemm(m, n, k, useSplitK = False):
                         best_kernelConfig = (i, splitK)
                         best_time = avg_t
                 else:
-                    print(f"{str(dim):<20} kernelid:{i:<3d}\t No pass         , {kernel.name}, {splitK=}")
+                    print(f"{str(dim):<20} kernelid:{i:<3d}\t No pass         , {kernel.name}, {splitK=}") 
             except RuntimeError as e:
-                print(f"{str(dim):<20} kernelid:{i:<3d}\t No support      , {kernel.name}, {splitK=}: e = {e}")
+                print(f"{str(dim):<20} kernelid:{i:<3d}\t No support      , {kernel.name}, {splitK=}") 
 
     best_kernelId, splitK = best_kernelConfig
     if best_kernelConfig[0] == -1:
@@ -88,10 +88,10 @@ def tune_gemm(m, n, k, useSplitK = False):
         best_time = 'nan'
     else:
         best_time = round(best_time, 4)
-
-        print(f"Tuning result for M:{m}, N:{n}, K:{k} is kernelId={best_kernelId} {splitK=}, {best_time}us")
+        
+        print(f"Tuning result for M:{m}, N:{n}, K:{k} is kernelId={best_kernelId} {kernels_list[best_kernelId].name} {splitK=}, {best_time}us")
     print(f"*******************M:{m} X N:{n} X K{k}**************************")
-
+    
     return best_kernelId, splitK, best_time
 
 
@@ -100,11 +100,11 @@ def tune_gemm_list(untunedf, tunedf, issorted = False, useSplitK = False):
         M = untunedf.loc[i, "M"]
         N = untunedf.loc[i, "N"]
         K = untunedf.loc[i, "K"]
-
+        
         if tunedf[(tunedf["M"]==M) & (tunedf["N"]==N) & (tunedf["K"]==K)].empty:
             kernelId, splitK, time = tune_gemm(M, N, K, useSplitK)
             kernelName = 'None' if kernelId == -1 else kernels_list[kernelId].name
-            temp = pd.DataFrame({"M":[M], "N":[N], "K":[K], "kernelId":[kernelId], "splitK":[splitK],
+            temp = pd.DataFrame({"M":[M], "N":[N], "K":[K], "kernelId":[kernelId], "splitK":[splitK], 
                            "us":[time], "kernelName":[kernelName]})
             tunedf = pd.concat([tunedf, temp], ignore_index=True)
 
