@@ -13,93 +13,88 @@ class get_all_instances:
         self.k_tile = [64, 128, 256, 512]
         self.block_size = [64, 128, 256]
         self.mn_warp = [1, 2, 4]
-        #self.pipeline = [1, 2, 3, 4, 5]
-        self.pipeline = [1, 2, 3, 4]
+        self.pipeline = [1, 2, 3]
         self.scheduler = ["Intrawave", "Interwave"]
         self.nbyte_a = 1
         self.nbyte_b = 1
+        self.nbyte_acc = 4
         self.nbyte_c = 2
         self.kpack = 128 // (self.nbyte_a * 8)
 
     def is_valid(self, blk, m, n, k, m_warp, n_warp, pipeline, scheduler):
-        num_warps = blk // 64
 
+        num_warps = blk // 64
         if(m_warp * n_warp != num_warps):
             return False
 
-        #alignment
+        # alignment with mfma
         if(m % (m_warp * 16) != 0 or n % (n_warp * 16) != 0):
             return False
 
         if(k % self.kpack != 0):
             return False
 
+        # make sure full loads
         k0 = k // self.kpack
         if((m * k0) % blk != 0 or (n * k0) % blk != 0):
             return False
 
-        #get LDS usage for a/b tile, pipeline v4 has double buffer
+        # get LDS usage for a/b tile, pipeline v4 has double buffer
         lds_a = m * k * self.nbyte_a * (2 if pipeline == 4 else 1)
         lds_b = n * k * self.nbyte_b * (2 if pipeline == 4 else 1)
         lds_c = m * n * self.nbyte_c
 
-        #lds size must no more than 64KB
+        # lds size must no more than 64KB
         if((lds_a + lds_b) > 64 * 1024):
             return False
 
-        #register usage per thread for a/b tile buffer must be no more than 512 * 4 bytes
-        if((lds_a + lds_b + lds_c) // blk > 512 * 4):
+        reg_a = m * k * self.nbyte_a // blk
+        reg_b = n * k * self.nbyte_b // blk
+        reg_c = m * n * self.nbyte_acc // blk
+
+        # register usage for a/b tile buffer must be no more than 256 * 4 bytes
+        if((reg_a + reg_b)  > 256 * 4):
+            return False
+
+        # register usage for a/b/c tile buffer must be no more than 512 * 4 bytes
+        if((reg_a + reg_b + reg_c)  > 512 * 4):
             return False
 
         #calculate occupancy based on LDS and register usage
         occupancy = 64 * 1024 // (lds_a + lds_b)
-        occupancy = min(occupancy, 256 * 4 // ((lds_a + lds_b) // blk))
-        occupancy = min(occupancy, 256 * 4 // (lds_c // blk))
+        occupancy = min(occupancy, 256 * 4 // (reg_a + reg_b + reg_c))
 
-
-        #Interwave requires occupancy > 1
+        #Interwave requires occupancy >= 2
         if(occupancy < 2 and scheduler == "Interwave"):
             return False
 
-        #occupancy require by pipeline v3
-        occupancy_min_v3 = 2 if ((m * n // blk) <= 128) else 1
-        if(occupancy < occupancy_min_v3 and pipeline == 3):
+        if(pipeline > 2 and scheduler == "Interwave"):
             return False
 
-        if(not(m == 256 and n == 256)):
+        return True
+
+    def is_good(self, blk, m, n, k, m_warp, n_warp, pipeline, scheduler):
+        #if(not (m == 256 and n == 256)):
+            #return False
+
+        m_per_warp = m // m_warp
+        n_per_warp = n // n_warp
+
+        #limit warp workloads
+        if(m_per_warp > 128 or n_per_warp > 128):
             return False
-        #m_per_warp = m // m_warp
-        #n_per_warp = n // n_warp
 
-        #m_repeat = m_per_warp // 16
-        #n_repeat = n_per_warp // 16
+        if((m < 128 or n < 128) and pipeline > 3):
+            return False
 
-        #if(abs(m_repeat - n_repeat) > 6):
-            #return False
+        if((m < 128 and n < 128) and k < 256):
+            return False
 
-        #if((m < 128 and n < 128) and k < 128):
-            #return False
+        if((m < 32 or n < 32) and pipeline > 2):
+            return False
 
-        #if(m == 256 and n == 256 and pipeline < 3):
-            #return False
-
-        #if((m < 128 or n < 128) and pipeline > 3):
-            #return False
-
-        #if((m > 128 and n > 128) and pipeline < 3):
-            #return False
-
-        #if(scheduler == "Interwave" and pipeline > 2):
-            #return False
-
-        #num_mfma = (m * n) // (16 * 16)
-        #if((num_mfma * 64) % blk != 0):
-            #return False
-
-        #if((num_mfma * 64) // blk > 64):
-            #return False
-        #if((m // 16 > 16) or (n // 16 > 16)):
-            #return False
+        if((m >= 64 and n >= 64) and pipeline < 3):
+            return False
 
         return True
 
@@ -119,14 +114,49 @@ class get_all_instances:
 
         return [mfma, mfma, m_repeat, n_repeat]
 
-    def try_c_transfer(self, blk, m_warp, n_warp, mfma, m_repeat, n_repeat, n_vec):
-        c_shuffle_m = m_warp * mfma * m_repeat
-        c_shuffle_n = n_warp * mfma * n_repeat
+    def is_valid_c_transfer(self, blk, tid_m, tid_n, m_warp, n_warp, c_m_repeat, c_n_repeat, mfma_cfg, n_vec):
+        mfma, _, m_repeat, n_repeat = mfma_cfg
 
+        c_shuffle_m = m_warp * mfma * c_m_repeat
+        c_shuffle_n = n_warp * mfma * c_n_repeat
+
+        if(tid_m * tid_n != blk):
+            return False
+
+        if(c_shuffle_m % tid_m != 0):
+            return False
+
+        if(c_shuffle_n % (tid_n * n_vec) != 0):
+            return False
+
+        if(m_repeat % c_m_repeat != 0):
+            return False
+
+        if(n_repeat % c_n_repeat != 0):
+            return False
+
+        lds_c_shuffle = c_shuffle_m * c_shuffle_n * self.nbyte_acc
+
+        if(lds_c_shuffle > 32 * 1024):
+            return False
+
+        return True
+
+
+    def try_c_transfer(self, blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec):
+        mfma, _, m_repeat, n_repeat = mfma_cfg
+
+        c_shuffle_m = m_warp * mfma * c_m_repeat
+        c_shuffle_n = n_warp * mfma * c_n_repeat
+
+        # load n dim first
         tid_n = c_shuffle_n // n_vec
         tid_m = blk // tid_n
-        return tid_m, tid_n
 
+        if(self.is_valid_c_transfer(blk, tid_m, tid_n, m_warp, n_warp, c_m_repeat, c_n_repeat, mfma_cfg, n_vec)):
+            return tid_m, tid_n
+        else:
+            return 0, 0
 
     def get_c_transfer(self, blk, m, n, m_warp, n_warp, mfma_cfg):
         mfma, _, m_repeat, n_repeat = mfma_cfg
@@ -136,37 +166,51 @@ class get_all_instances:
         c_m_repeat = 1
         c_n_repeat = 1
 
-        tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
+        c_shuffle_n = n_warp * mfma * c_n_repeat
 
-        ctgs_store_size = n_vec * tid_n * self.nbyte_c
+        ctgs_store_size = c_shuffle_n * self.nbyte_c
 
         #if possible, enlarge c_n_repeat to fit 128B cacheline
-        if(ctgs_store_size < 128 and n_repeat % 2 == 0):
+        if(ctgs_store_size < 128 and c_n_repeat % 2 == 0):
             c_n_repeat = 2
-            _tid_m, _tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
-            if(_tid_m * _tid_n == blk):
-                return [[c_m_repeat, c_n_repeat], [1, _tid_m, 1, _tid_n], [n_vec, n_vec, 1]]
+            tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
+            if(tid_n * tid_m == blk):
+                return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
+
+        ##if not meet, use default
+        #tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
+        #if(tid_n * tid_m == blk):
+            #return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
 
         #if not meet, try enlarge c_m_repeat
-        if(tid_m * tid_n != blk):
+        if(m_repeat % 2 == 0):
             c_m_repeat = 2
-            tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
-            if(tid_m * tid_n == blk):
-                return [[c_m_repeat, c_n_repeat], [1, _tid_m, 1, _tid_n], [n_vec, n_vec, 1]]
+            tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
+            if(tid_n * tid_m == blk):
+                return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
 
         #if not meet, try reduce vec_len
-        if(tid_m * tid_n != blk):
-            n_vec = 4
-            tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma, c_m_repeat, c_n_repeat, n_vec)
-            if(tid_m * tid_n == blk):
-                return [[c_m_repeat, c_n_repeat], [1, _tid_m, 1, _tid_n], [n_vec, n_vec, 1]]
+        n_vec = n_vec // 2
+        tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
+        if(tid_n * tid_m == blk):
+            return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
 
-        if(tid_m * tid_n != blk):
+        #if not meet, try reduce vec_len
+        n_vec = n_vec // 2
+        tid_m, tid_n = self.try_c_transfer(blk, m_warp, n_warp, mfma_cfg, c_m_repeat, c_n_repeat, n_vec)
+        if(tid_n * tid_m == blk):
+            return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
+
+
+        #still not meat, raise an Exception
+        if(tid_n * tid_m != blk):
             raise Exception("cannot find proper cshuffle")
 
-        return [[c_m_repeat, c_n_repeat], [1, tid_m, 1, tid_n], [n_vec, n_vec, 1]]
+        return [-1]
 
     def get_ab_transfer(self, blk, mn, k):
+
+        # load k dim first
         k0 = k // self.kpack
         tid_k0 = k0
         tid_mn = blk // tid_k0
@@ -184,7 +228,7 @@ class get_all_instances:
                             for n_warp in self.mn_warp:
                                 for pipeline in self.pipeline:
                                     for scheduler in self.scheduler:
-                                        if(self.is_valid(blk, m, n, k, m_warp, n_warp, pipeline, scheduler)):
+                                        if(self.is_valid(blk, m, n, k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, m, n, k, m_warp, n_warp, pipeline, scheduler)):
                                             try:
                                                 mfma_cfg = self.get_mfma(blk, m, n, m_warp, n_warp)
                                                 a_load = self.get_ab_transfer(blk, m, k)
@@ -193,7 +237,7 @@ class get_all_instances:
                                                 print(f"{num_i:>4}: kernelInstance({blk:>4},\t{m:>4},\t{n:>4},\t{k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
                                                 num_i += 1
                                             except Exception as e:
-                                                print(f"cannot generate proper instance, e = {e}")
+                                                print(f"cannot generate proper instance {blk, m, n, k, m_warp, n_warp, mfma_cfg}, e = {e}")
         print(f"total instance = {num_i}")
 
 
