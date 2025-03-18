@@ -81,7 +81,7 @@ class get_all_instances:
         n_per_warp = n // n_warp
 
         #limit warp workloads
-        if((m_per_warp > 128 or n_per_warp > 128) and blk < 256):
+        if((m_per_warp > 64 or n_per_warp > 64) and blk < 256):
             return False
 
         if((m < 128 or n < 128) and pipeline > 3):
