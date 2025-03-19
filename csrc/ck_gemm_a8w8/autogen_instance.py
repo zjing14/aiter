@@ -14,7 +14,7 @@ class get_all_instances:
         self.block_size = [64, 128, 256]
         self.mn_warp = [1, 2, 4]
         self.pipeline = [1, 2, 3]
-        self.scheduler = ["Intrawave", "Interwave"]
+        self.scheduler = ["Intrawave"]
         self.nbyte_a = 1
         self.nbyte_b = 1
         self.nbyte_acc = 4
@@ -40,8 +40,8 @@ class get_all_instances:
             return False
 
         # get LDS usage for a/b tile, pipeline v4 has double buffer
-        lds_a = m * k * self.nbyte_a * (2 if pipeline == 4 else 1)
-        lds_b = n * k * self.nbyte_b * (2 if pipeline == 4 else 1)
+        lds_a = m * k * self.nbyte_a * (2 if pipeline > 1 else 1)
+        lds_b = n * k * self.nbyte_b * (2 if pipeline > 1 else 1)
         lds_c = m * n * self.nbyte_c
 
         # lds size must no more than 64KB
@@ -79,6 +79,11 @@ class get_all_instances:
 
         m_per_warp = m // m_warp
         n_per_warp = n // n_warp
+
+        m_repeats = m_per_warp // 32 if m_per_warp % 32 == 0 else m_per_warp // 16
+
+        if(m_repeats < 4 and pipeline == 3):
+            return False
 
         #limit warp workloads
         if((m_per_warp > 64 or n_per_warp > 64) and blk < 256):
