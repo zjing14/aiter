@@ -27,36 +27,36 @@ class autogen_instances:
         self.nbyte_c = 2
         self.kpack = 128 // (self.nbyte_a * 8)
 
-    def is_valid(self, blk, m, n, k, m_warp, n_warp, pipeline, scheduler):
+    def is_valid(self, blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler):
 
         num_warps = blk // 64
         if (m_warp * n_warp != num_warps):
             return False
 
         # alignment with mfma
-        if (m % (m_warp * 16) != 0 or n % (n_warp * 16) != 0):
+        if (tile_m % (m_warp * 16) != 0 or tile_n % (n_warp * 16) != 0):
             return False
 
-        if (k % self.kpack != 0):
+        if (tile_k % self.kpack != 0):
             return False
 
         # make sure full loads
-        k0 = k // self.kpack
-        if ((m * k0) % blk != 0 or (n * k0) % blk != 0):
+        k0 = tile_k // self.kpack
+        if ((tile_m * k0) % blk != 0 or (tile_n * k0) % blk != 0):
             return False
 
         # get LDS usage for a/b tile, pipeline v4 has double buffer
-        lds_a = m * k * self.nbyte_a * (2 if pipeline == 4 else 1)
-        lds_b = n * k * self.nbyte_b * (2 if pipeline == 4 else 1)
-        lds_c = m * n * self.nbyte_c
+        lds_a = tile_m * tile_k * self.nbyte_a * (2 if pipeline == 4 else 1)
+        lds_b = tile_n * tile_k * self.nbyte_b * (2 if pipeline == 4 else 1)
+        lds_c = tile_m * tile_n * self.nbyte_c
 
         # lds size must no more than 64KB
         if ((lds_a + lds_b) > 64 * 1024):
             return False
 
-        reg_a = m * k * self.nbyte_a // blk
-        reg_b = n * k * self.nbyte_b // blk
-        reg_c = m * n * self.nbyte_acc // blk
+        reg_a = tile_m * tile_k * self.nbyte_a // blk
+        reg_b = tile_n * tile_k * self.nbyte_b // blk
+        reg_c = tile_m * tile_n * self.nbyte_acc // blk
 
         # register usage for a/b tile buffer must be no more than 256 * 4 bytes
         if ((reg_a + reg_b) > 256 * 4):
@@ -79,34 +79,34 @@ class autogen_instances:
 
         return True
 
-    def is_good(self, blk, m, n, k, m_warp, n_warp, pipeline, scheduler):
-        #if(not (blk == 256 and m == 32 and n == 64)):
+    def is_good(self, blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler):
+        #if(not (blk == 256 and tile_m == 32 and tile_n == 64)):
         #return False
 
-        m_per_warp = m // m_warp
-        n_per_warp = n // n_warp
+        m_per_warp = tile_m // m_warp
+        n_per_warp = tile_n // n_warp
 
         #limit warp workloads
         if ((m_per_warp > 64 or n_per_warp > 64) and blk < 256):
             return False
 
-        if ((m < 128 or n < 128) and pipeline > 3):
+        if ((tile_m < 128 or tile_n < 128) and pipeline > 3):
             return False
 
-        if ((m < 128 and n < 128) and k < 256):
+        if ((tile_m < 128 and tile_n < 128) and tile_k < 256):
             return False
 
-        if ((m < 32 or n < 32) and pipeline > 2):
+        if ((tile_m < 32 or tile_n < 32) and pipeline > 2):
             return False
 
-        if ((m >= 64 and n >= 64) and pipeline < 3):
+        if ((tile_m >= 64 and tile_n >= 64) and pipeline < 3):
             return False
 
         return True
 
-    def get_mfma(self, blk, m, n, m_warp, n_warp):
-        m_per_warp = m // m_warp
-        n_per_warp = n // n_warp
+    def get_mfma(self, blk, tile_m, tile_n, m_warp, n_warp):
+        m_per_warp = tile_m // m_warp
+        n_per_warp = tile_n // n_warp
 
         # use 32x32 mfma if possible
         if (m_per_warp % 32 == 0 and n_per_warp % 32 == 0):
@@ -155,7 +155,7 @@ class autogen_instances:
         c_shuffle_m = m_warp * mfma * c_m_repeat
         c_shuffle_n = n_warp * mfma * c_n_repeat
 
-        # load n dim first
+        # load tile_n dim first
         tid_n = c_shuffle_n // n_vec
         tid_m = blk // tid_n
 
@@ -165,7 +165,7 @@ class autogen_instances:
         else:
             return 0, 0
 
-    def get_c_transfer(self, blk, m, n, m_warp, n_warp, mfma_cfg):
+    def get_c_transfer(self, blk, tile_m, tile_n, m_warp, n_warp, mfma_cfg):
         mfma, _, m_repeat, n_repeat = mfma_cfg
 
         n_vec = 128 // (8 * self.nbyte_c)
@@ -209,10 +209,10 @@ class autogen_instances:
 
         return [-1]
 
-    def get_ab_transfer(self, blk, mn, k):
+    def get_ab_transfer(self, blk, mn, tile_k):
 
-        # load k dim first
-        k0 = k // self.kpack
+        # load tile_k dim first
+        k0 = tile_k // self.kpack
         tid_k0 = k0
         tid_mn = blk // tid_k0
 
@@ -223,16 +223,16 @@ class autogen_instances:
 
         instance = {}
 
-        for blk, m, n, k, m_warp, n_warp, pipeline, scheduler in product(self.block_size, self.mn_tile, self.mn_tile, self.k_tile, self.mn_warp, self.mn_warp, self.pipeline, self.scheduler):
-            if (self.is_valid(blk, m, n, k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, m, n, k, m_warp, n_warp, pipeline, scheduler)):
+        for blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler in product(self.block_size, self.mn_tile, self.mn_tile, self.k_tile, self.mn_warp, self.mn_warp, self.pipeline, self.scheduler):
+            if (self.is_valid(blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler)):
                 try:
-                    mfma_cfg = self.get_mfma(blk, m, n, m_warp, n_warp)
-                    a_load = self.get_ab_transfer(blk, m, k)
-                    b_load = self.get_ab_transfer(blk, n, k)
-                    c_shuffle = self.get_c_transfer(blk, m, n, m_warp, n_warp, mfma_cfg)
-                    #print(f"{num_i:>4}: kernelInstance({blk:>4},\t{m:>4},\t{n:>4},\t{k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
+                    mfma_cfg = self.get_mfma(blk, tile_m, tile_n, m_warp, n_warp)
+                    a_load = self.get_ab_transfer(blk, tile_m, tile_k)
+                    b_load = self.get_ab_transfer(blk, tile_n, tile_k)
+                    c_shuffle = self.get_c_transfer(blk, tile_m, tile_n, m_warp, n_warp, mfma_cfg)
+                    #print(f"{num_i:>4}: kernelInstance({blk:>4},\t{tile_m:>4},\t{tile_n:>4},\t{tile_k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
                     instance[num_i] = kernelInstance(
-                            blk, m, n, k,
+                            blk, tile_m, tile_n, tile_k,
                             mfma_cfg[0],
                             mfma_cfg[1],
                             mfma_cfg[2],
@@ -248,7 +248,7 @@ class autogen_instances:
                             )
                     num_i += 1
                 except Exception as e:
-                    print(f"cannot generate proper instance with {blk, m, n, k, m_warp, n_warp, mfma_cfg}, e = {e}")
+                    print(f"cannot generate proper instance with {blk, tile_m, tile_n, tile_k, m_warp, n_warp, mfma_cfg}, e = {e}")
         print(f"[AutoGen] {num_i} instances created")
         return instance
 
