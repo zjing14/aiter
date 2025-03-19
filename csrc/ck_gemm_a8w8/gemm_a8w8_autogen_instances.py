@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import argparse
 import shutil
+from itertools import product
 
 from gemm_a8w8_common import kernelInstance
 
@@ -13,8 +14,7 @@ from gemm_a8w8_common import kernelInstance
 class autogen_instances:
 
     def __init__(self):
-        self.mn_tile = [
-            16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240,256]
+        self.mn_tile = [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256]
         self.k_tile = [64, 128, 256, 512]
         self.block_size = [64, 128, 256]
         self.mn_warp = [1, 2, 4]
@@ -223,39 +223,32 @@ class autogen_instances:
 
         instance = {}
 
-        for blk in self.block_size:
-            for m in self.mn_tile:
-                for n in self.mn_tile:
-                    for k in self.k_tile:
-                        for m_warp in self.mn_warp:
-                            for n_warp in self.mn_warp:
-                                for pipeline in self.pipeline:
-                                    for scheduler in self.scheduler:
-                                        if (self.is_valid(blk, m, n, k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, m, n, k, m_warp, n_warp, pipeline, scheduler)):
-                                            try:
-                                                mfma_cfg = self.get_mfma(blk, m, n, m_warp, n_warp)
-                                                a_load = self.get_ab_transfer(blk, m, k)
-                                                b_load = self.get_ab_transfer(blk, n, k)
-                                                c_shuffle = self.get_c_transfer(blk, m, n, m_warp, n_warp, mfma_cfg)
-                                                #print(f"{num_i:>4}: kernelInstance({blk:>4},\t{m:>4},\t{n:>4},\t{k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
-                                                instance[num_i] = kernelInstance(
-                                                        blk, m, n, k,
-                                                        mfma_cfg[0],
-                                                        mfma_cfg[1],
-                                                        mfma_cfg[2],
-                                                        mfma_cfg[3],
-                                                        a_load,
-                                                        b_load,
-                                                        c_shuffle[1],
-                                                        c_shuffle[2],
-                                                        c_shuffle[0][0],
-                                                        c_shuffle[0][1],
-                                                        scheduler, pipeline)
-                                                num_i += 1
-                                            except Exception as e:
-                                                print(
-                                                    f"cannot generate proper instance {blk, m, n, k, m_warp, n_warp, mfma_cfg}, e = {e}"
-                                                )
+        for blk, m, n, k, m_warp, n_warp, pipeline, scheduler in product(self.block_size, self.mn_tile, self.mn_tile, self.k_tile, self.mn_warp, self.mn_warp, self.pipeline, self.scheduler):
+            if (self.is_valid(blk, m, n, k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, m, n, k, m_warp, n_warp, pipeline, scheduler)):
+                try:
+                    mfma_cfg = self.get_mfma(blk, m, n, m_warp, n_warp)
+                    a_load = self.get_ab_transfer(blk, m, k)
+                    b_load = self.get_ab_transfer(blk, n, k)
+                    c_shuffle = self.get_c_transfer(blk, m, n, m_warp, n_warp, mfma_cfg)
+                    #print(f"{num_i:>4}: kernelInstance({blk:>4},\t{m:>4},\t{n:>4},\t{k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
+                    instance[num_i] = kernelInstance(
+                            blk, m, n, k,
+                            mfma_cfg[0],
+                            mfma_cfg[1],
+                            mfma_cfg[2],
+                            mfma_cfg[3],
+                            a_load,
+                            b_load,
+                            c_shuffle[1],
+                            c_shuffle[2],
+                            c_shuffle[0][0],
+                            c_shuffle[0][1],
+                            scheduler,
+                            pipeline
+                            )
+                    num_i += 1
+                except Exception as e:
+                    print(f"cannot generate proper instance with {blk, m, n, k, m_warp, n_warp, mfma_cfg}, e = {e}")
         print(f"[AutoGen] {num_i} instances created")
         return instance
 
