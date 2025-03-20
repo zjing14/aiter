@@ -39,10 +39,13 @@ std::vector<at::Tensor>
 {{{{
     // Check if this input needs to be padded.
 #if 0
-    int M = XQ.size(1);
-    int N = WQ.size(1);
-    int K = WQ.size(2);
-    bool pad = (M % {k.MPerBLOCK} != 0) || (N % {k.NPerBLOCK} != 0) || (K % ({k.KPerBLOCK} * KBatch) != 0);
+    bool pad = true;
+	for (int i = 0; i < A.size(); i++) {{{{
+		int M = A[i].size(0);
+		int K = A[i].size(1);
+		int N = B[i].size(0);
+        pad = pad & (M % {k.MPerBLOCK} != 0) || (N % {k.NPerBLOCK} != 0) || (K % ({k.KPerBLOCK} * KBatch) != 0);
+	}}}}
 #else
     // disable padding for packed tensor
     bool pad = false;
@@ -85,7 +88,7 @@ std::vector<at::Tensor>
                 ck::BlockGemmPipelineVersion::v{k.PIPELINE_VERSION},
                 ck::tensor_operation::device::GemmSpecialization::{{GemmSpec}}>;
             // Run kernel instance.
-            return bf16_grouped_impl<DDataType, EDataType, DeviceGemmInstance>(XQ, WQ, x_scale, w_scale, Y, bias, KBatch);
+            return bf16_grouped_impl<DDataType, EDataType, DeviceGemmInstance>(XQ, WQ, Y, bias, KBatch);
         }}}}
 """
         INSTANCE_CONTENT_nobias = f"""using DeviceGemmInstance = DeviceGemmHelper<
@@ -113,8 +116,8 @@ std::vector<at::Tensor>
             INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=(INSTANCE_CONTENT_nobias.format(GemmSpec="MNKPadding")),
                                                      INSTANCE_CONTENT_nopad=(INSTANCE_CONTENT_nobias.format(GemmSpec="Default")))
         else:
-            INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=INSTANCE_CONTENT_bias.format(GemmSpec="MNKPadding"),
-                                                     INSTANCE_CONTENT_nopad=INSTANCE_CONTENT_bias.format(GemmSpec="Default"))
+            INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=INSTANCE_CONTENT_nobias.format(GemmSpec="MNKPadding"),
+                                                     INSTANCE_CONTENT_nopad=INSTANCE_CONTENT_nobias.format(GemmSpec="Default"))
 
         Path(os.path.join(self.impl_path, f"{k.name}.hip")).write_text(
                 INSTANCE_IMPL_str)
@@ -158,23 +161,13 @@ template torch::Tensor
                 INSTANCE_dFP32_eFP16)
 
     def gen_lookup_dict(self, kernels_dict):
-        LOOKUP_head = """#pragma once
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
-
-#ifdef USE_ROCM
-
-#define GENERATE_LOOKUP_TABLE(DTYPE, ETYPE)                                                                                      \\
-   {                                                                                                                             \\"""
-
+        LOOKUP_head = """
+static const std::unordered_map<std::tuple<int, int, int, int>, GroupedKernel, IntTupleHash> bf16_grouped_lookup_dispatch = {"""
         LOOKUP_template = """
-       {{{mnk},                                                                                                       \\
-        {kernel_name}<DTYPE, ETYPE>}},                       \\"""
+  {{{mnk},{kernel_name}}},"""
 
         LOOKUP_end = """
-   }
-
-#endif // USE_ROCM
+}
 """
         with open(os.path.join(self.working_path, "grouped_gemm_a8w8_lookup.h"), "w") as f:
             f.write(LOOKUP_head)

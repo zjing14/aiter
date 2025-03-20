@@ -114,7 +114,7 @@ template at::Tensor
                 ck::BlockGemmPipelineVersion::v{k.PIPELINE_VERSION},
                 ck::tensor_operation::device::GemmSpecialization::{{GemmSpec}}>;
             // Run kernel instance.
-            return grouped_gemm_a8w8_rowwise_impl<DDataType, EDataType, DeviceGemmInstance>(XQ, WQ, x_scale, w_scale, Y, bias, KBatch);
+            return f8f8bf16_rowwise_grouped_impl<DDataType, EDataType, DeviceGemmInstance>(XQ, WQ, x_scale, w_scale, Y, bias, KBatch);
         }}}}
 """
         INSTANCE_CONTENT_nobias = f"""using DeviceGemmInstance = DeviceGemmHelper<
@@ -142,10 +142,10 @@ template at::Tensor
             INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=(INSTANCE_CONTENT_nobias.format(GemmSpec="MNKPadding")),
                                                      INSTANCE_CONTENT_nopad=(INSTANCE_CONTENT_nobias.format(GemmSpec="Default")))
         else:
-            INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=INSTANCE_CONTENT_bias.format(GemmSpec="MNKPadding"),
-                                                     INSTANCE_CONTENT_nopad=INSTANCE_CONTENT_bias.format(GemmSpec="Default"))
+            INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=INSTANCE_CONTENT_nobias.format(GemmSpec="MNKPadding"),
+                                                     INSTANCE_CONTENT_nopad=INSTANCE_CONTENT_nobias.format(GemmSpec="Default"))
 
-        Path(os.path.join(self.impl_path, f"{k.name}.cuh")).write_text(
+        Path(os.path.join(self.impl_path, f"{k.name}.hip")).write_text(
                 INSTANCE_IMPL_str)
 
         INSTANCE_template = """// SPDX-License-Identifier: MIT
@@ -243,7 +243,7 @@ OutputType
         MAINFEST_end = """
 """
 
-        with open(os.path.join(self.working_path, "grouped_gemm_a8w8_manifest.h"), "w") as f:
+        with open(os.path.join(self.working_path, "fp8_rowwise_grouped_kernel_manifest.h"), "w") as f:
             f.write(MAINFEST_head)
             for mnk, k in kernels_dict.items():
                 f.write(MAINFEST_template.format(kernel_name=k.name))
