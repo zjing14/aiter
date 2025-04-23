@@ -8,7 +8,7 @@ import argparse
 import shutil
 from itertools import product
 
-from batched_gemm_a8w8_common import kernelInstance
+from gemm_a8w8_common import kernelInstance
 
 
 class autogen_instances:
