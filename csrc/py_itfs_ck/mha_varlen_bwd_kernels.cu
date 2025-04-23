@@ -6,29 +6,10 @@
 #include "py_itfs_common.h"
 #include "mha_common.h"
 
-#include "fmha_bwd.hpp"
-#include "mask.hpp"
+#include "mha_bwd.h"
 
-fmha_bwd_traits get_ck_fmha_varlen_bwd_traits(const mask_info &mask,
-                                              std::string dtype,
-                                              int head_size_q,
-                                              int head_size_v,
-                                              bool has_dropout,
-                                              bool enable_alibi,
-                                              bool deterministic)
-{
-    return fmha_bwd_traits{head_size_q,
-                           head_size_v,
-                           dtype,
-                           true, // is_group_mode
-                           mask.type,
-                           enable_alibi ? bias_enum::alibi : bias_enum::no_bias,
-                           false,    // has_dbias
-                           has_dropout,
-                           false, // s_randval
-                           deterministic};
-}
-
+namespace aiter {
+namespace torch_itfs {
 fmha_bwd_args get_ck_fmha_varlen_bwd_args(const mask_info &mask,
                                           // sizes
                                           const int b,
@@ -167,11 +148,11 @@ fmha_bwd_args get_ck_fmha_varlen_bwd_args(const mask_info &mask,
                          stride_dq,
                          stride_dk,
                          stride_dv,
-                         0, // stride_dbias, FA without bias
+                         0, // stride_dbias
                          nhead_stride_q,
                          nhead_stride_k,
                          nhead_stride_v,
-                         0, // nhead_stride_bias, FA without bias
+                         0, // nhead_stride_bias
                          nhead_stride_o,
                          0, // nhead_stride_randval
                          nhead_stride_do,
@@ -180,11 +161,11 @@ fmha_bwd_args get_ck_fmha_varlen_bwd_args(const mask_info &mask,
                          nhead_stride_dq,
                          nhead_stride_dk,
                          nhead_stride_dv,
-                         0, // nhead_stride_dbias, FA without dbias
+                         0, // nhead_stride_dbias
                          batch_stride_q,
                          batch_stride_k,
                          batch_stride_v,
-                         0  , // batch_stride_bias, FA without bias
+                         0  , // batch_stride_bias
                          batch_stride_o,
                          0, // batch_stride_randval
                          batch_stride_do,
@@ -360,6 +341,8 @@ mha_varlen_bwd(const at::Tensor &dout,         // [total_q, hq, d_v]
         softmax_d.zero_();
     }
 
+    bias_enum bias_type = alibi_slopes_.has_value() ? bias_enum::alibi : bias_enum::no_bias;
+
     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
         gen_, at::cuda::detail::getDefaultCUDAGenerator());
 
@@ -384,9 +367,7 @@ mha_varlen_bwd(const at::Tensor &dout,         // [total_q, hq, d_v]
         auto rng_state_ptr = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
         auto drop_seed_offset = std::make_pair(rng_state_ptr, rng_state_ptr + 1);
         ck_tile::stream_config stream_config{stream};
-
-        auto traits =
-            get_ck_fmha_varlen_bwd_traits(mask, q_dtype_str, head_size_q, head_size_v, is_dropout, alibi_slopes_.has_value(), deterministic);
+        stream_config.log_level_ = 1;
 
         auto args =
             get_ck_fmha_varlen_bwd_args(
@@ -416,7 +397,18 @@ mha_varlen_bwd(const at::Tensor &dout,         // [total_q, hq, d_v]
                 p_dropout,
                 drop_seed_offset);
 
-        float t = fmha_bwd(traits, args, stream_config);
+        float t = aiter::mha_bwd(args,
+                                 stream_config,
+                                 q_dtype_str,
+                                 true,  //is_group_mode
+                                 mask,
+                                 bias_type,
+                                 false,  // has_dbias
+                                 false,  // is_store_randval
+                                 deterministic,
+                                 false,  // use_ext_asm
+                                 false,  // is_v3_atomic_fp32
+                                 0);     // how_v3_bf16_cvt
         TORCH_CHECK(t >= 0, "invalid argument for fmha_bwd");
     } else {
         // If seqlen_q == 0, then we have an empty tensor. We need to set the output to 0.
@@ -433,3 +425,6 @@ mha_varlen_bwd(const at::Tensor &dout,         // [total_q, hq, d_v]
 
     return { dq, dk, dv, softmax_d };
 }
+
+} // namespace torch_itfs
+} // namespace aiter

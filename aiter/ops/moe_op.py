@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
 
+import torch
+import torch.nn.functional as F
 from torch import Tensor
 from typing import List, Optional
-from ..jit.core import compile_ops, CK_DIR, AITER_CSRC_DIR, AITER_ROOT_DIR, AITER_CORE_DIR
-import torch.nn.functional as F
+from ..jit.core import (
+    compile_ops,
+    CK_DIR,
+    AITER_CSRC_DIR,
+    AITER_ROOT_DIR,
+    AITER_CORE_DIR,
+)
+from .enum import ActivationType, Enum, QuantType
 
 
 @compile_ops("module_moe_asm")
@@ -40,19 +48,11 @@ def fmoe(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
 ): ...
-
-
-@compile_ops("module_moe_asm", fc_name='ActivationType')
-class _ActivationType():
-    ...
-
-
-ActivationType = _ActivationType(0)
 
 
 @compile_ops("module_moe_asm")
@@ -62,7 +62,7 @@ def fmoe_int8_g1u0(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
@@ -70,7 +70,7 @@ def fmoe_int8_g1u0(
     fc1_scale: Tensor,
     fc2_scale: Tensor,
     fc2_smooth_scale: Tensor,
-    activation: Optional[_ActivationType] = ActivationType.Silu,
+    activation: Optional[Enum] = ActivationType.Silu,
 ): ...
 
 
@@ -81,7 +81,7 @@ def fmoe_g1u1(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
@@ -89,7 +89,26 @@ def fmoe_g1u1(
     fc1_scale: Tensor,
     fc2_scale: Tensor,
     fc2_smooth_scale: Optional[Tensor] = None,
-    activation: Optional[_ActivationType] = ActivationType.Silu,
+    activation: Optional[Enum] = ActivationType.Silu,
+): ...
+
+
+@compile_ops("module_moe_asm")
+def fmoe_g1u1_tkw1(
+    out: Tensor,
+    input: Tensor,
+    gate: Tensor,
+    down: Tensor,
+    sorted_token_ids: Tensor,
+    sorted_weights: Tensor,
+    sorted_expert_ids: Tensor,
+    num_valid_ids: Tensor,
+    topk: int,
+    input_scale: Tensor,
+    fc1_scale: Tensor,
+    fc2_scale: Tensor,
+    fc2_smooth_scale: Optional[Tensor] = None,
+    activation: Optional[Enum] = ActivationType.Silu,
 ): ...
 
 
@@ -100,7 +119,7 @@ def fmoe_int8_g1u0_a16(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
@@ -118,7 +137,7 @@ def fmoe_g1u1_a16(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
@@ -136,16 +155,39 @@ def fmoe_fp8_blockscale_g1u1(
     gate: Tensor,
     down: Tensor,
     sorted_token_ids: Tensor,
-    sorted_weight_buf: Tensor,
+    sorted_weights: Tensor,
     sorted_expert_ids: Tensor,
     num_valid_ids: Tensor,
     topk: int,
+    input_scale: Tensor,
     fc1_scale: Tensor,
     fc2_scale: Tensor,
-    input_scale: Optional[Tensor] = None,
-    fc_scale_blkn: Optional[Tensor] = 128,
-    fc_scale_blkk: Optional[Tensor] = 128,
+    fc_scale_blkn: int = 128,
+    fc_scale_blkk: int = 128,
     fc2_smooth_scale: Optional[Tensor] = None,
+    activation: ActivationType = ActivationType.Silu,
+): ...
+
+
+@compile_ops("module_moe_asm")
+def moe_stage1_g1u1(
+    input: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    sorted_token_ids: torch.Tensor,
+    sorted_expert_ids: torch.Tensor,
+    num_valid_ids: torch.Tensor,
+    out: torch.Tensor,
+    inter_dim: int,
+    kernelName: str,
+    block_m: int,
+    ksplit: int = 0,
+    activation: Enum = ActivationType.Silu,
+    quant_type: Enum = QuantType.No,
+    a1_scale: Optional[Tensor] = None,
+    w1_scale: Optional[Tensor] = None,
+    doweight_stage1: bool = False,
+    sorted_weights: Optional[Tensor] = None # do sorted weight multiply in stage1
 ): ...
 
 
@@ -161,7 +203,7 @@ def ck_moe(
     fc1_smooth_scale: Optional[Tensor] = None,
     fc2_smooth_scale: Optional[Tensor] = None,
     block_m: Optional[int] = 32,
-    expert_mask: Optional[Tensor] = None
+    expert_mask: Optional[Tensor] = None,
 ): ...
 
 
@@ -177,7 +219,8 @@ def ck_moe_stage1(
     topk: int,
     w1_scale: Optional[Tensor] = None,
     a1_scale: Optional[Tensor] = None,
-    block_m: Optional[int] = 32
+    block_m: Optional[int] = 32,
+    sorted_weights: Optional[Tensor] = None,
 ): ...
 
 
@@ -188,11 +231,11 @@ def ck_moe_stage2(
     w2: Tensor,
     sorted_token_ids: Tensor,
     sorted_expert_ids: Tensor,
-    sorted_weights: Tensor,
     num_valid_ids: Tensor,
     out: Tensor,
     topk: int,
     w2_scale: Optional[Tensor] = None,
     a2_scale: Optional[Tensor] = None,
-    block_m: Optional[int] = 32
+    block_m: Optional[int] = 32,
+    sorted_weights: Optional[Tensor] = None,
 ): ...

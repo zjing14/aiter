@@ -6,29 +6,10 @@
 #include "py_itfs_common.h"
 #include "mha_common.h"
 
-#include "fmha_fwd.hpp"
-#include "mask.hpp"
+#include "mha_fwd.h"
 
-fmha_fwd_traits get_ck_fmha_fwd_traits(const mask_info &mask,
-                                       std::string dtype,
-                                       int head_size_q,
-                                       int head_size_v,
-                                       bool has_dropout,
-                                       bool has_lse,
-                                       bool enable_alibi)
-{
-    return fmha_fwd_traits{head_size_q,
-                           head_size_v,
-                           dtype,
-                           false, // is_group_mode
-                           true,  // is_v_rowmajor
-                           mask.type,
-                           enable_alibi ? bias_enum::alibi : bias_enum::no_bias,
-                           has_lse,
-                           has_dropout,
-                           false}; // do_fp8_static_quant
-}
-
+namespace aiter {
+namespace torch_itfs {
 fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
                                    bool has_dropout_randval,
                                    const mask_info &mask,
@@ -44,6 +25,7 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
                                    const at::Tensor q,
                                    const at::Tensor k,
                                    const at::Tensor v,
+                                   std::optional<const at::Tensor> &bias_,
                                    std::optional<const at::Tensor> &alibi_slopes_,
                                    at::Tensor out,
                                    at::Tensor softmax_lse,
@@ -57,6 +39,7 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
     // v: (batch_size, seqlen_k, nheads_k, d_v)
     // o: (batch_size, seqlen_q, nheads, d_v)
 
+    // bias:(seqlen_q, seqlen_k)
     // alibi_slopes:(batch_size, nheads) or (nhead)
     // lse: (batch_size, nheads, seqlen_q)
     // randval: (batch_size, nheads, seqlen_q, seqlen_k)
@@ -82,22 +65,30 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
     ck_tile::index_t batch_stride_lse = has_lse ? softmax_lse.stride(0) : 0;
     ck_tile::index_t batch_stride_randval = has_dropout_randval ? dropout_randval.stride(0) : 0;
 
-    void *alibi_slopes_ptr = nullptr;
-    ck_tile::index_t stride_alibi_slopes = 0;
+    void *bias_ptr = nullptr;
+    ck_tile::index_t stride_bias = 0;
 
-    if (alibi_slopes_.has_value()) {
+    if (bias_.has_value()) {
+        auto bias = bias_.value();
+        CHECK_DEVICE(bias);
+        TORCH_CHECK(bias.stride(-1) == 1, "bias tensor must have contiguous last dimension");
+        TORCH_CHECK(bias.sizes() == torch::IntArrayRef({seqlen_q, seqlen_k}), "bias shape should be [sq, sk]");
+        bias_ptr = bias.data_ptr();
+        stride_bias = bias.stride(0);
+    }
+    else if (alibi_slopes_.has_value()) {
         auto alibi_slopes = alibi_slopes_.value();
         CHECK_DEVICE(alibi_slopes);
         TORCH_CHECK(alibi_slopes.stride(-1) == 1, "ALiBi slopes tensor must have contiguous last dimension");
         TORCH_CHECK(alibi_slopes.sizes() == torch::IntArrayRef({h}) || alibi_slopes.sizes() == torch::IntArrayRef({b, h}));
-        alibi_slopes_ptr = alibi_slopes.data_ptr();
-        stride_alibi_slopes = alibi_slopes.dim() == 2 ? alibi_slopes.stride(0) : 0;
+        bias_ptr = alibi_slopes.data_ptr();
+        stride_bias = alibi_slopes.dim() == 2 ? alibi_slopes.stride(0) : 0;
     }
 
     return fmha_fwd_args{q.data_ptr(),
                          k.data_ptr(),
                          v.data_ptr(),
-                         alibi_slopes_ptr, // bias
+                         bias_ptr,
                          has_dropout_randval ? dropout_randval.data_ptr() : nullptr,
                          has_lse ? softmax_lse.data_ptr() : nullptr,
                          out.data_ptr(),
@@ -118,20 +109,20 @@ fmha_fwd_args get_ck_fmha_fwd_args(bool has_lse,
                          stride_q,
                          stride_k,
                          stride_v,
-                         stride_alibi_slopes,
+                         stride_bias,
                          stride_randval,
                          stride_o,
                          nhead_stride_q,
                          nhead_stride_k,
                          nhead_stride_v,
-                         0, // nhead_stride_bias, FA without bias
+                         0, // nhead_stride_bias
                          nhead_stride_randval,
                          nhead_stride_lse,
                          nhead_stride_o,
                          batch_stride_q,
                          batch_stride_k,
                          batch_stride_v,
-                         0, // batch_stride_bias, FA without bias
+                         0, // batch_stride_bias
                          batch_stride_randval,
                          batch_stride_lse,
                          batch_stride_o,
@@ -155,6 +146,7 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
         bool return_softmax_lse,
         bool return_dropout_randval,
         std::optional<at::Tensor> out_,          // [b, sq, hq, d_v]
+        std::optional<const at::Tensor> bias_,   // [sq, sk]
         std::optional<const at::Tensor> alibi_slopes_, // [hq] or [b, hq]
         std::optional<at::Generator> gen_)
 {
@@ -211,9 +203,15 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
         mask = mask_info::decode(mask_identify, seqlen_q, seqlen_k); // local
     }
 
+    TORCH_CHECK(!(bias_.has_value() && alibi_slopes_.has_value()), "cannot apply bias and alibi at the same time");
+    bias_enum bias_type = bias_.has_value() ? bias_enum::elementwise_bias :
+        alibi_slopes_.has_value() ? bias_type = bias_enum::alibi : bias_enum::no_bias;
+
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
-    const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && p_dropout == 0.f && head_size_q % 8 == 0 && !alibi_slopes_.has_value();
+    const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k &&
+        window_size_left < 0 && window_size_right < 0 && p_dropout == 0.f && head_size_q % 8 == 0 &&
+        !alibi_slopes_.has_value() && !bias_.has_value();
     const int ngroups = num_heads / num_heads_k;
     if (seqlenq_ngroups_swapped) {
         q = q.reshape({batch_size, num_heads_k, ngroups, head_size_q}).transpose(1, 2);
@@ -283,16 +281,6 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
         auto stream = at::cuda::getCurrentHIPStream().stream();
         ck_tile::stream_config stream_config{stream};
 
-        auto traits =
-            get_ck_fmha_fwd_traits(
-                mask,
-                q_dtype_str,
-                head_size_q,
-                head_size_v,
-                has_dropout,
-                has_lse,
-                alibi_slopes_.has_value());
-
         auto args =
             get_ck_fmha_fwd_args(
                 has_lse,
@@ -308,6 +296,7 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
                 q,
                 k,
                 v,
+                bias_,
                 alibi_slopes_,
                 out,
                 softmax_lse,
@@ -316,7 +305,13 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
                 p_dropout,
                 drop_seed_offset);
 
-        float t = fmha_fwd(traits, args, stream_config);
+        float t = aiter::mha_fwd(args,
+                                 stream_config,
+                                 q_dtype_str,
+                                 false, // is_group_mode
+                                 mask,
+                                 bias_type,
+                                 has_lse);
         TORCH_CHECK(t >= 0, "invalid argument for fmha_fwd");
     }
     else {
@@ -334,3 +329,6 @@ mha_fwd(at::Tensor &q, // [b, sq, hq, d]
     }
     return {out, softmax_lse, p, rng_state};
 }
+
+} // namespace torch_itfs
+} // namespace aiter

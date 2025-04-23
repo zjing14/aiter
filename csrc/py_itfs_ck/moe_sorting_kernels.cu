@@ -18,6 +18,10 @@ void moe_sorting_fwd(torch::Tensor &topk_ids,          // [m, topk]
                      int unit_size,
                      std::optional<torch::Tensor> local_expert_mask = std::nullopt)
 {
+    // Ensure that the incoming top‑k weights tensor is FP32
+    TORCH_CHECK(topk_weights.scalar_type() == at::ScalarType::Float,
+                "topk_weights must be FP32 (float32)");
+    
     auto dtype = topk_ids.dtype();
 
     auto dtype_str = torchDTypeToStr(topk_ids.dtype());
@@ -48,6 +52,6 @@ void moe_sorting_fwd(torch::Tensor &topk_ids,          // [m, topk]
                  num_valid_ids.data_ptr(),     // p_total_tokens_post_pad
                  moe_buf.data_ptr(),           // p_moe_buf
                  ws_ptr,                       // p_workspace
-                 num_tokens, unit_size, num_experts, topk, (int)moe_buf.nbytes()},
+                 num_tokens, unit_size, num_experts, topk, static_cast<int64_t>(moe_buf.nbytes())},
                 {stream});
 }
