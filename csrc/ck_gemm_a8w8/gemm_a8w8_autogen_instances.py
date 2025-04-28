@@ -14,11 +14,13 @@ from gemm_a8w8_common import kernelInstance
 class autogen_instances:
 
     def __init__(self):
-        self.mn_tile = [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256]
+        self.a_layout = 0 #mk
+        self.b_layout = 1 #kn
+        #self.mn_tile = [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256]
+        self.mn_tile = [16, 32, 64, 128, 256]
         self.k_tile = [64, 128, 256, 512]
         self.block_size = [64, 128, 256]
         self.mn_warp = [1, 2, 4]
-        #self.pipeline = [1, 2, 3, 4, 5]
         self.pipeline = [1, 2, 3]
         self.scheduler = ["Intrawave", "Interwave"]
         self.nbyte_a = 1
@@ -26,6 +28,8 @@ class autogen_instances:
         self.nbyte_acc = 4
         self.nbyte_c = 2
         self.kpack = 128 // (self.nbyte_a * 8)
+
+        assert self.nbyte_a == self.nbyte_b, "self.nbyte_a must be equal to self.nbyte_b"
 
     def is_valid(self, blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler):
 
@@ -218,14 +222,44 @@ class autogen_instances:
 
         return [-1]
 
-    def get_ab_transfer(self, blk, mn, tile_k):
+    def get_ab_transfer(self, layout, blk, tile_mn, tile_k):
 
-        # load tile_k dim first
         k0 = tile_k // self.kpack
-        tid_k0 = k0
-        tid_mn = blk // tid_k0
+        tid_k1 = 1
 
-        return [tid_k0, tid_mn, 1]
+        def is_power_of_two(n):
+            if n <= 0:
+                return False
+            return (n & (n - 1)) == 0
+
+        def max_power_of_two(n):
+            if is_power_of_two(n):
+                return n
+            nbit = n.bit_length() - 1
+            max_val = pow(2, nbit)
+            while n % max_val != 0:
+                max_val = max_val // 2
+            return max_val
+
+
+        if layout == 0:
+            tid_k0 = k0
+            tid_mn = blk // tid_k0
+        else:
+            mn_pack = self.kpack
+            found = False
+            while found != True and mn_pack > 1:
+                tile_mn0 = tile_mn // mn_pack
+                tid_mn = blk if (tile_mn0 % blk == 0) else tile_mn0
+                tid_k0 = blk // tid_mn
+                tid_k0 = tid_k0 if (k0 % tid_k0 == 0) else max_power_of_two(k0)
+                if tid_k0 * tid_mn != blk:
+                    mn_pack = mn_pack // 2
+                    continue;
+                found = True
+                #assert k0 % tid_k0 == 0, "k0 % tid_k0 == 0"
+
+        return [tid_k0, tid_mn, tid_k1]
 
     def gen_list(self):
         num_i = 0
@@ -236,8 +270,8 @@ class autogen_instances:
             if (self.is_valid(blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler) and self.is_good(blk, tile_m, tile_n, tile_k, m_warp, n_warp, pipeline, scheduler)):
                 try:
                     mfma_cfg = self.get_mfma(blk, tile_m, tile_n, m_warp, n_warp)
-                    a_load = self.get_ab_transfer(blk, tile_m, tile_k)
-                    b_load = self.get_ab_transfer(blk, tile_n, tile_k)
+                    a_load = self.get_ab_transfer(self.a_layout, blk, tile_m, tile_k)
+                    b_load = self.get_ab_transfer(self.b_layout, blk, tile_n, tile_k)
                     c_shuffle = self.get_c_transfer(blk, tile_m, tile_n, m_warp, n_warp, mfma_cfg)
                     print(f"{num_i:>4}: kernelInstance({blk:>4},\t{tile_m:>4},\t{tile_n:>4},\t{tile_k:>4},\t{mfma_cfg[0]:>4},\t{mfma_cfg[1]:>4},\t{mfma_cfg[2]:>2},\t{mfma_cfg[3]:>2},\t{a_load},\t{b_load},\t{c_shuffle[1]},\t{c_shuffle[2]},\t{c_shuffle[0][0]},\t{c_shuffle[0][1]},\t\"{scheduler}\",\t{pipeline}),")
                     instance[num_i] = kernelInstance(

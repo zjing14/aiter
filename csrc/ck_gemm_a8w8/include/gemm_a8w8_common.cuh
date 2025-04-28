@@ -53,7 +53,7 @@ using Col = ck::tensor_layout::gemm::ColumnMajor;
 // using ComputeDataType = I8;
 
 using ALayout = Row;
-using BLayout = Col;
+using BLayout = Row;
 using D0Layout = Row;
 using D1Layout = Col;
 using D2Layout = Row;
@@ -170,7 +170,7 @@ using DeviceGemmHelper =
         MBLOCK,                           // M per Block
         NBLOCK,                           // N per Block
         KBLOCK,                           // K per Block
-        KBLOCK / ABLOCK_TRANSFER{}.At(0), // AK1
+        16,                               // AK1
         16,                               // BK1
         WAVE_TILE_M,                      // M per Xdl
         WAVE_TILE_N,                      // N per Xdl
@@ -180,14 +180,14 @@ using DeviceGemmHelper =
         S<1, 0, 2>,
         S<1, 0, 2>,
         2,
-        KBLOCK / ABLOCK_TRANSFER{}.At(0),
-        KBLOCK / ABLOCK_TRANSFER{}.At(0),
+        16,                               // AK1
+        16,
         0,
         BBLOCK_TRANSFER,
-        S<1, 0, 2>,
-        S<1, 0, 2>,
-        2,
-        16,
+        S<0, 2, 1>,
+        S<0, 2, 1>,
+        1,
+        NBLOCK / BBLOCK_TRANSFER{}.At(1),
         16,
         0,
         CSHUFFLE_MX_PER_WAVE_PERSHUFFLE,
@@ -211,11 +211,11 @@ __forceinline__ torch::Tensor gemm_a8w8_rowwise_impl(
     int KBatch)
 {
     int M = XQ.size(0);
-    int N = WQ.size(0);
     int K = XQ.size(1);
+    int N = WQ.size(1);
 
     int StrideA = K;
-    int StrideB = K;
+    int StrideB = N;
     int StrideE = N;
 
     const at::cuda::OptionalCUDAGuard device_guard(device_of(XQ));
@@ -272,6 +272,7 @@ __forceinline__ torch::Tensor gemm_a8w8_rowwise_impl(
             a_element_op,
             b_element_op,
             cde_element_op);
+
         TORCH_CHECK(device_gemm.IsSupportedArgument(argument), "This GEMM is not supported!");
 
         invoker.Run(argument, StreamConfig{at::hip::getCurrentHIPStreamMasqueradingAsCUDA().stream()});

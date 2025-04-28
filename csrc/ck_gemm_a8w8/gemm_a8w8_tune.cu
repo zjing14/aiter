@@ -68,9 +68,11 @@ torch::Tensor gemm_a8w8_tune(
   std::optional<torch::Tensor> bias = std::nullopt;
 
   int M = XQ.size(0);
-  int N = WQ.size(0);
   int K = XQ.size(1);
+  int N = WQ.size(1);
   int KBatch = std::pow(2, splitK);
+
+  TORCH_CHECK(XQ.size(1) == WQ.size(0), "K dim from XQ and WQ does not match");
 
   // if (x_scale.dtype() == at::ScalarType::Float && Y.dtype() == at::ScalarType::Half)
   // {

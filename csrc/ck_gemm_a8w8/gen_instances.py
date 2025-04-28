@@ -18,7 +18,7 @@ class gemm_a8w8_fwd_codegen:
         self.impl_path = os.path.join(working_path, "impl")
         self.instances_path = os.path.join(working_path, "instances")
         self.istune = istune
-    
+
     def gen_instance(self, k: kernelInstance):
         INSTANCE_IMPL = f"""// SPDX-License-Identifier: MIT
 // Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
@@ -40,8 +40,8 @@ torch::Tensor
 
     // Check if this input needs to be padded.
     int M = size_to_dim_(XQ.dim() - 1, XQ.sizes());
-    int N = WQ.size(0);
-    int K = WQ.size(1);
+    int K = WQ.size(0);
+    int N = WQ.size(1);
     bool pad = (M % {k.MPerBLOCK} != 0) || (N % {k.NPerBLOCK} != 0) || (K % ({k.KPerBLOCK} * KBatch) != 0);
     using AccDataType = std::conditional_t<ck::is_same_v<ABDataType, I8>, I32, F32>;
     if (pad)
@@ -58,7 +58,7 @@ torch::Tensor
     }}}}
 }}}}
 
-"""     
+"""
         INSTANCE_CONTENT_bias = f"""if (bias != std::nullopt)
         {{{{
             using DeviceGemmInstance = DeviceGemmHelper<
@@ -113,7 +113,7 @@ torch::Tensor
             // Run kernel instance.
             return gemm_a8w8_rowwise_impl<ABDataType, DDataType, EDataType, false, DeviceGemmInstance>(XQ, WQ, x_scale, w_scale, Y, bias, KBatch);
         }}}}
-""" 
+"""
         INSTANCE_CONTENT_nobias = f"""using DeviceGemmInstance = DeviceGemmHelper<
             ABDataType,
             AccDataType,
@@ -138,7 +138,7 @@ torch::Tensor
             ck::tensor_operation::device::GemmSpecialization::{{GemmSpec}}>;
         // Run kernel instance.
         return gemm_a8w8_rowwise_impl<ABDataType, DDataType, EDataType, false, DeviceGemmInstance>(XQ, WQ, x_scale, w_scale, Y, bias, KBatch);
-""" 
+"""
         if self.istune:
             INSTANCE_IMPL_str = INSTANCE_IMPL.format(INSTANCE_CONTENT_pad=(INSTANCE_CONTENT_nobias.format(GemmSpec="MNKPadding")),
                                                      INSTANCE_CONTENT_nopad=(INSTANCE_CONTENT_nobias.format(GemmSpec="Default")))
@@ -148,7 +148,7 @@ torch::Tensor
 
         Path(os.path.join(self.impl_path, f"{k.name}.cuh")).write_text(
                 INSTANCE_IMPL_str)
-        
+
         INSTANCE_template = """// SPDX-License-Identifier: MIT
 // Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
 
@@ -266,7 +266,7 @@ def get_tune_dict(tune_dict_csv):
             N = tune_df.loc[i, "N"]
             K = tune_df.loc[i, "K"]
             kid = tune_df.loc[i, "kernelId"]
-            tune_dict[(M, N, K)] = kernels_list[kid] 
+            tune_dict[(M, N, K)] = kernels_list[kid]
     return tune_dict
 
 if __name__ == "__main__":
@@ -291,7 +291,7 @@ if __name__ == "__main__":
         required=False,
         help="tune_file include the result after run gemm_a8w8_tune.py"
     )
-    
+
     parser.add_argument(
         "--tune",
         action='store_true',

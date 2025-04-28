@@ -52,12 +52,12 @@ def kernel_instance_test(x, weight, x_scale, w_scale, out, kernel_id, splitK=0):
 def tune_gemm(m, n, k, useSplitK = False):
     dim = (m, n, k)
     x = torch.randint(-20, 20, (m, k), dtype=torch.int8, device="cuda")
-    weight = torch.randint(-20, 20, (n, k), dtype=torch.int8, device="cuda")
-    x_scale = torch.rand([m, 1], dtype=torch.bfloat16, device="cuda")
-    w_scale = torch.rand([1, n], dtype=torch.bfloat16, device="cuda")
+    weight = torch.randint(-20, 20, (k, n), dtype=torch.int8, device="cuda")
+    x_scale = torch.ones([m, 1], dtype=torch.bfloat16, device="cuda")
+    w_scale = torch.ones([1, n], dtype=torch.bfloat16, device="cuda")
     out = torch.empty(m, n, dtype=torch.bfloat16, device="cuda")
 
-    ref_out = run_torch(x, weight, x_scale, w_scale)
+    ref_out = run_torch(x, weight.T, x_scale, w_scale)
 
     print(f"*******************M:{m} X N:{n} X K:{k}**************************")
     print(f"Start tuning a8w8 gemm kernel for M:{m}, N:{n}, K{k}:")
@@ -78,9 +78,9 @@ def tune_gemm(m, n, k, useSplitK = False):
                         best_kernelConfig = (i, splitK)
                         best_time = avg_t
                 else:
-                    print(f"{str(dim):<20} kernelid:{i:<3d}\t No pass         , {kernel.name}, {splitK=}") 
+                    print(f"{str(dim):<20} kernelid:{i:<3d}\t No pass         , {kernel.name}, {splitK=}")
             except RuntimeError as e:
-                print(f"{str(dim):<20} kernelid:{i:<3d}\t No support      , {kernel.name}, {splitK=}") 
+                print(f"{str(dim):<20} kernelid:{i:<3d}\t No support      , {kernel.name}, {splitK=}")
 
     best_kernelId, splitK = best_kernelConfig
     if best_kernelConfig[0] == -1:
@@ -88,10 +88,10 @@ def tune_gemm(m, n, k, useSplitK = False):
         best_time = 'nan'
     else:
         best_time = round(best_time, 4)
-        
+
         print(f"Tuning result for M:{m}, N:{n}, K:{k} is kernelId={best_kernelId} {kernels_list[best_kernelId].name} {splitK=}, {best_time}us")
     print(f"*******************M:{m} X N:{n} X K{k}**************************")
-    
+
     return best_kernelId, splitK, best_time
 
 
@@ -100,11 +100,11 @@ def tune_gemm_list(untunedf, tunedf, issorted = False, useSplitK = False):
         M = untunedf.loc[i, "M"]
         N = untunedf.loc[i, "N"]
         K = untunedf.loc[i, "K"]
-        
+
         if tunedf[(tunedf["M"]==M) & (tunedf["N"]==N) & (tunedf["K"]==K)].empty:
             kernelId, splitK, time = tune_gemm(M, N, K, useSplitK)
             kernelName = 'None' if kernelId == -1 else kernels_list[kernelId].name
-            temp = pd.DataFrame({"M":[M], "N":[N], "K":[K], "kernelId":[kernelId], "splitK":[splitK], 
+            temp = pd.DataFrame({"M":[M], "N":[N], "K":[K], "kernelId":[kernelId], "splitK":[splitK],
                            "us":[time], "kernelName":[kernelName]})
             tunedf = pd.concat([tunedf, temp], ignore_index=True)
 

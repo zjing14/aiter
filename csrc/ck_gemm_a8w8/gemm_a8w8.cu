@@ -157,10 +157,9 @@ torch::Tensor gemm_a8w8(
                 "Out amd bias should have the same dtype!");
 
   int M = XQ.size(0);
-  int N = WQ.size(0);
   int K = XQ.size(1);
+  int N = WQ.size(1);
   int KBatch = std::pow(2, splitK);
-
 
   if (XQ.dtype() == at::ScalarType::Char)
   {
